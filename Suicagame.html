@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>フルーツ合体ゲーム</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #f8f3e8;
+      color: #333;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    h1 {
+      margin: 16px 0 8px;
+      font-size: 28px;
+    }
+
+    .topbar {
+      width: 100%;
+      max-width: 520px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0 12px 12px;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .info {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      font-weight: bold;
+    }
+
+    .controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    button {
+      border: none;
+      background: #333;
+      color: #fff;
+      padding: 10px 14px;
+      border-radius: 10px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    button:hover {
+      opacity: 0.9;
+    }
+
+    #gameWrap {
+      position: relative;
+      width: 420px;
+      max-width: 100%;
+      margin-bottom: 24px;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      border: 4px solid #8b6b4a;
+      border-radius: 18px;
+      background: linear-gradient(to bottom, #fffaf0, #f2e4c9);
+    }
+
+    #nextBox {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: rgba(255,255,255,0.88);
+      border: 2px solid #d9c4a1;
+      border-radius: 14px;
+      padding: 8px 10px;
+      text-align: center;
+      min-width: 90px;
+      z-index: 10;
+      box-shadow: 0 3px 10px rgba(0,0,0,0.08);
+    }
+
+    #nextLabel {
+      font-size: 12px;
+      margin-bottom: 4px;
+      color: #666;
+    }
+
+    #message {
+      min-height: 24px;
+      font-weight: bold;
+      color: #b03030;
+      margin-bottom: 8px;
+    }
+
+    .hint {
+      max-width: 520px;
+      padding: 0 12px 24px;
+      line-height: 1.6;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+  <h1>フルーツ合体ゲーム</h1>
+
+  <div class="topbar">
+    <div class="info">
+      <div>スコア: <span id="score">0</span></div>
+      <div>最高: <span id="best">0</span></div>
+    </div>
+    <div class="controls">
+      <button id="restartBtn">やり直す</button>
+    </div>
+  </div>
+
+  <div id="message"></div>
+
+  <div id="gameWrap">
+    <div id="nextBox">
+      <div id="nextLabel">NEXT</div>
+      <canvas id="nextCanvas" width="60" height="60"></canvas>
+    </div>
+  </div>
+
+  <div class="hint">
+    使い方：マウスを左右に動かして、クリックで落とします。<br>
+    同じフルーツ同士がぶつかると、ひとつ上のフルーツに進化します。<br>
+    上の赤いラインを超えた状態が続くとゲームオーバーです。
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.20.0/matter.min.js"></script>
+  <script>
+    const {
+      Engine, Render, Runner, World, Bodies, Body, Events, Composite
+    } = Matter;
+
+    const WIDTH = 420;
+    const HEIGHT = 620;
+    const WALL = 30;
+    const DROP_Y = 90;
+    const GAME_OVER_LINE_Y = 110;
+
+    const FRUITS = [
+      { name: "さくらんぼ", r: 18, color: "#e74c3c", score: 1 },
+      { name: "いちご",     r: 26, color: "#ff6b81", score: 3 },
+      { name: "ぶどう",     r: 34, color: "#9b59b6", score: 6 },
+      { name: "みかん",     r: 44, color: "#f39c12", score: 10 },
+      { name: "りんご",     r: 56, color: "#e67e22", score: 15 },
+      { name: "もも",       r: 70, color: "#ff9ff3", score: 24 },
+      { name: "スイカ",     r: 88, color: "#2ecc71", score: 40 }
+    ];
+
+    let engine, world, render, runner;
+    let score = 0;
+    let best = Number(localStorage.getItem("fruit_merge_best") || 0);
+    let currentDropX = WIDTH / 2;
+    let nextFruitIndex = randomStartFruit();
+    let canDrop = true;
+    let gameOver = false;
+    let mergingPairs = new Set();
+    let dangerFrames = 0;
+
+    const scoreEl = document.getElementById("score");
+    const bestEl = document.getElementById("best");
+    const messageEl = document.getElementById("message");
+    const gameWrap = document.getElementById("gameWrap");
+    const restartBtn = document.getElementById("restartBtn");
+    const nextCanvas = document.getElementById("nextCanvas");
+    const nextCtx = nextCanvas.getContext("2d");
+
+    bestEl.textContent = best;
+
+    function randomStartFruit() {
+      return Math.floor(Math.random() * 3); // 最初は小さいものだけ
+    }
+
+    function updateNextPreview() {
+      const fruit = FRUITS[nextFruitIndex];
+      nextCtx.clearRect(0, 0, nextCanvas.width, nextCanvas.height);
+
+      nextCtx.beginPath();
+      nextCtx.arc(30, 30, Math.min(fruit.r, 22), 0, Math.PI * 2);
+      nextCtx.fillStyle = fruit.color;
+      nextCtx.fill();
+      nextCtx.strokeStyle = "rgba(0,0,0,0.12)";
+      nextCtx.lineWidth = 2;
+      nextCtx.stroke();
+
+      nextCtx.fillStyle = "#333";
+      nextCtx.font = "11px Arial";
+      nextCtx.textAlign = "center";
+      nextCtx.fillText(fruit.name, 30, 56);
+    }
+
+    function setMessage(text) {
+      messageEl.textContent = text;
+    }
+
+    function updateScore(add = 0) {
+      score += add;
+      scoreEl.textContent = score;
+      if (score > best) {
+        best = score;
+        bestEl.textContent = best;
+        localStorage.setItem("fruit_merge_best", String(best));
+      }
+    }
+
+    function makeFruit(x, y, index, sleeping = false) {
+      const fruit = FRUITS[index];
+      const body = Bodies.circle(x, y, fruit.r, {
+        restitution: 0.15,
+        friction: 0.02,
+        frictionAir: 0.01,
+        density: 0.0018,
+        label: "fruit",
+        render: {
+          fillStyle: fruit.color,
+          strokeStyle: "rgba(0,0,0,0.12)",
+          lineWidth: 2
+        }
+      });
+
+      body.fruitIndex = index;
+      body.isFruit = true;
+      body.mergeId = crypto.randomUUID ? crypto.randomUUID() : String(Math.random());
+
+      if (sleeping) {
+        Body.setStatic(body, true);
+      }
+
+      World.add(world, body);
+      return body;
+    }
+
+    function addWalls() {
+      const floor = Bodies.rectangle(WIDTH / 2, HEIGHT + WALL / 2, WIDTH, WALL, {
+        isStatic: true,
+        render: { fillStyle: "#8b6b4a" }
+      });
+
+      const leftWall = Bodies.rectangle(-WALL / 2, HEIGHT / 2, WALL, HEIGHT * 2, {
+        isStatic: true,
+        render: { fillStyle: "#8b6b4a" }
+      });
+
+      const rightWall = Bodies.rectangle(WIDTH + WALL / 2, HEIGHT / 2, WALL, HEIGHT * 2, {
+        isStatic: true,
+        render: { fillStyle: "#8b6b4a" }
+      });
+
+      const sensorTop = Bodies.rectangle(WIDTH / 2, GAME_OVER_LINE_Y, WIDTH - 60, 4, {
+        isStatic: true,
+        isSensor: true,
+        label: "topSensor",
+        render: {
+          fillStyle: "rgba(255,0,0,0.5)"
+        }
+      });
+
+      World.add(world, [floor, leftWall, rightWall, sensorTop]);
+    }
+
+    function drawDropGuide() {
+      const ctx = render.context;
+      ctx.save();
+
+      ctx.beginPath();
+      ctx.moveTo(currentDropX, 0);
+      ctx.lineTo(currentDropX, DROP_Y - 10);
+      ctx.strokeStyle = "rgba(80,80,80,0.25)";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 6]);
+      ctx.stroke();
+
+      const fruit = FRUITS[nextFruitIndex];
+      ctx.beginPath();
+      ctx.arc(currentDropX, DROP_Y - fruit.r, fruit.r, 0, Math.PI * 2);
+      ctx.fillStyle = fruit.color;
+      ctx.globalAlpha = 0.65;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = "rgba(0,0,0,0.15)";
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    function dropFruit() {
+      if (!canDrop || gameOver) return;
+
+      const fruit = FRUITS[nextFruitIndex];
+      const minX = 30 + fruit.r;
+      const maxX = WIDTH - 30 - fruit.r;
+      const x = Math.max(minX, Math.min(maxX, currentDropX));
+
+      const body = makeFruit(x, DROP_Y, nextFruitIndex, false);
+      Body.setVelocity(body, { x: 0, y: 0 });
+
+      canDrop = false;
+      setTimeout(() => {
+        canDrop = true;
+      }, 350);
+
+      nextFruitIndex = randomStartFruit();
+      updateNextPreview();
+    }
+
+    function mergeFruits(a, b) {
+      if (!a || !b || gameOver) return;
+      if (a.fruitIndex !== b.fruitIndex) return;
+      if (a.fruitIndex >= FRUITS.length - 1) return;
+
+      const pairKey = [a.id, b.id].sort().join("-");
+      if (mergingPairs.has(pairKey)) return;
+      mergingPairs.add(pairKey);
+
+      setTimeout(() => {
+        const bodyA = Composite.get(world, a.id, "body");
+        const bodyB = Composite.get(world, b.id, "body");
+        if (!bodyA || !bodyB) {
+          mergingPairs.delete(pairKey);
+          return;
+        }
+        if (bodyA.fruitIndex !== bodyB.fruitIndex) {
+          mergingPairs.delete(pairKey);
+          return;
+        }
+
+        const newIndex = bodyA.fruitIndex + 1;
+        const x = (bodyA.position.x + bodyB.position.x) / 2;
+        const y = (bodyA.position.y + bodyB.position.y) / 2;
+
+        World.remove(world, bodyA);
+        World.remove(world, bodyB);
+
+        const merged = makeFruit(x, y, newIndex, false);
+        Body.setVelocity(merged, { x: 0, y: -3 });
+
+        updateScore(FRUITS[newIndex].score);
+        mergingPairs.delete(pairKey);
+      }, 30);
+    }
+
+    function checkGameOver() {
+      if (gameOver) return;
+
+      const bodies = Composite.allBodies(world);
+      const dangerous = bodies.some(body => {
+        return body.isFruit && !body.isSleeping && (body.position.y - FRUITS[body.fruitIndex].r < GAME_OVER_LINE_Y);
+      });
+
+      if (dangerous) {
+        dangerFrames++;
+      } else {
+        dangerFrames = 0;
+      }
+
+      if (dangerFrames > 90) {
+        gameOver = true;
+        setMessage("ゲームオーバー");
+      }
+    }
+
+    function resetGame() {
+      if (render) {
+        Render.stop(render);
+        render.canvas.remove();
+        render.textures = {};
+      }
+      if (runner) {
+        Runner.stop(runner);
+      }
+
+      score = 0;
+      currentDropX = WIDTH / 2;
+      nextFruitIndex = randomStartFruit();
+      canDrop = true;
+      gameOver = false;
+      mergingPairs.clear();
+      dangerFrames = 0;
+      scoreEl.textContent = "0";
+      setMessage("");
+
+      engine = Engine.create();
+      world = engine.world;
+      world.gravity.y = 1.05;
+
+      render = Render.create({
+        element: gameWrap,
+        engine: engine,
+        options: {
+          width: WIDTH,
+          height: HEIGHT,
+          wireframes: false,
+          background: "transparent"
+        }
+      });
+
+      addWalls();
+
+      Events.on(engine, "collisionStart", function(event) {
+        const pairs = event.pairs;
+        for (const pair of pairs) {
+          const a = pair.bodyA;
+          const b = pair.bodyB;
+
+          if (a.isFruit && b.isFruit && a.fruitIndex === b.fruitIndex) {
+            mergeFruits(a, b);
+          }
+        }
+      });
+
+      Events.on(render, "afterRender", function() {
+        const ctx = render.context;
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(20, GAME_OVER_LINE_Y);
+        ctx.lineTo(WIDTH - 20, GAME_OVER_LINE_Y);
+        ctx.strokeStyle = "rgba(220, 50, 50, 0.45)";
+        ctx.lineWidth = 3;
+        ctx.setLineDash([8, 6]);
+        ctx.stroke();
+        ctx.restore();
+
+        if (!gameOver) {
+          drawDropGuide();
+        } else {
+          ctx.save();
+          ctx.fillStyle = "rgba(0,0,0,0.45)";
+          ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+          ctx.fillStyle = "#fff";
+          ctx.font = "bold 34px Arial";
+          ctx.textAlign = "center";
+          ctx.fillText("GAME OVER", WIDTH / 2, HEIGHT / 2 - 10);
+
+          ctx.font = "20px Arial";
+          ctx.fillText("スコア: " + score, WIDTH / 2, HEIGHT / 2 + 28);
+          ctx.restore();
+        }
+      });
+
+      Events.on(engine, "afterUpdate", function() {
+        checkGameOver();
+      });
+
+      Render.run(render);
+      runner = Runner.create();
+      Runner.run(runner, engine);
+
+      updateNextPreview();
+    }
+
+    window.addEventListener("mousemove", (e) => {
+      if (!render || gameOver) return;
+      const rect = render.canvas.getBoundingClientRect();
+      const scaleX = WIDTH / rect.width;
+      const x = (e.clientX - rect.left) * scaleX;
+      currentDropX = Math.max(28, Math.min(WIDTH - 28, x));
+    });
+
+    window.addEventListener("touchmove", (e) => {
+      if (!render || gameOver) return;
+      const touch = e.touches[0];
+      const rect = render.canvas.getBoundingClientRect();
+      const scaleX = WIDTH / rect.width;
+      const x = (touch.clientX - rect.left) * scaleX;
+      currentDropX = Math.max(28, Math.min(WIDTH - 28, x));
+    }, { passive: true });
+
+    window.addEventListener("click", (e) => {
+      if (!render) return;
+      const rect = render.canvas.getBoundingClientRect();
+      const inside =
+        e.clientX >= rect.left &&
+        e.clientX <= rect.right &&
+        e.clientY >= rect.top &&
+        e.clientY <= rect.bottom;
+
+      if (inside) dropFruit();
+    });
+
+    window.addEventListener("touchend", (e) => {
+      if (!render) return;
+      dropFruit();
+    });
+
+    restartBtn.addEventListener("click", resetGame);
+
+    resetGame();
+  </script>
+</body>
+</html>
